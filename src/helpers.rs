@@ -113,8 +113,17 @@ pub fn gen_keys<C: CircuitExt<Fr>>(params_path: &str, circuit_config_path: &str,
         pk.write(&mut writer, SerdeFormat::RawBytesUnchecked).unwrap();
         writer.flush().unwrap();
     }
-
     let vk = pk.get_vk();
+    {
+        let gen = halo2_solidity_verifier::SolidityGenerator::new(&params, &vk, 1, None);
+        let (verifier, vk) = gen.render_separately().unwrap();
+
+        // File::create("./Halo2Verifier.sol").unwrap().write_all(verifier.as_bytes()).unwrap();
+        // File::create("./Halo2VerifyingKey.sol").unwrap().write_all(vk.as_bytes()).unwrap();
+
+        dbg!(compile_solidity(verifier).len());
+        dbg!(compile_solidity(vk).len());
+    }
     {
         let f = File::create(vk_path).unwrap();
         let mut writer = BufWriter::new(f);
@@ -122,6 +131,31 @@ pub fn gen_keys<C: CircuitExt<Fr>>(params_path: &str, circuit_config_path: &str,
         writer.flush().unwrap();
     }
     Ok(())
+}
+
+pub fn compile_solidity(solidity: impl AsRef<[u8]>) -> Vec<u8> {
+    let mut cmd = std::process::Command::new("solc")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .arg("--bin")
+        .arg("--via-ir")
+        .arg("-")
+        .spawn()
+        .unwrap();
+    cmd.stdin.take().unwrap().write_all(solidity.as_ref()).unwrap();
+    let output = cmd.wait_with_output().unwrap();
+    let stdout = std::str::from_utf8(&output.stdout).unwrap();
+    if let Some(binary) = find_binary(stdout) {
+        binary
+    } else {
+        panic!("{}", std::str::from_utf8(&output.stderr).unwrap());
+    }
+}
+
+fn find_binary(stdout: &str) -> Option<Vec<u8>> {
+    let start = stdout.find("Binary:")? + 8;
+    Some(hex::decode(&stdout[start..stdout.len() - 1]).unwrap())
 }
 
 // /// Generate proving and verifying keys for the aggregation circuit.
