@@ -115,7 +115,7 @@ pub fn gen_keys<C: CircuitExt<Fr>>(params_path: &str, circuit_config_path: &str,
     }
     let vk = pk.get_vk();
     {
-        let gen = halo2_solidity_verifier::SolidityGenerator::new(&params, &vk, 1, None);
+        let gen = halo2_solidity_verifier::SolidityGenerator::new(&params, &vk, 1, None, halo2_solidity_verifier::BatchOpenScheme::Bdfg21);
         let (verifier, vk) = gen.render_separately().unwrap();
 
         // File::create("./Halo2Verifier.sol").unwrap().write_all(verifier.as_bytes()).unwrap();
