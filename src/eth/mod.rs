@@ -131,9 +131,13 @@ pub async fn deploy_and_call_verifiers(sols_dir: &PathBuf, runs: Option<usize>, 
         Token::Array(instance.body_starts.iter().map(|idx| Token::Uint(U256::from(idx.clone()))).collect_vec()),
     ]);
     let proof = Bytes::from(proof.to_vec());
-    verifier.verify_email(Bytes::from(instance.clone()), proof.clone()).call().await.unwrap();
-    let call = verifier.method::<_, ()>("verifyEmail", (Bytes::from(instance.clone()), proof.clone())).unwrap();
-    println!("estimated gas {:?}", call.estimate_gas().await.unwrap());
+    let fn_call = verifier.verify_email(Bytes::from(instance.clone()), proof.clone()).gas(10000000);
+    let result = fn_call.send().await.unwrap();
+    let recepit = result.await.unwrap().unwrap();
+    println!("gas used {:?}", recepit.gas_used);
+
+    // let call = verifier.method::<_, ()>("verifyEmail", (Bytes::from(instance.clone()), proof.clone())).unwrap();
+    // println!("estimated gas {:?}", call.estimate_gas().await.unwrap());
     // drop(anvil);
 }
 
@@ -193,6 +197,8 @@ pub fn get_contract_artifacts(sol_code_path: &PathBuf, contract_name: &str, runs
         .find(contract_name)
         .expect(&format!("could not find contract {} in {:?}", contract_name, &sol_code_path))
         .into_parts_or_default();
+    dbg!(bytecode.len());
+    dbg!(runtime_bytecode.len());
     (abi, bytecode, runtime_bytecode)
 }
 
