@@ -7,7 +7,7 @@ use ethers::solc::{CompilerInput, EvmVersion, Solc};
 use ethers::types::transaction::eip2718::TypedTransaction;
 use ethers::types::{Bytes, TransactionRequest};
 use halo2_base::halo2_proofs::circuit::Value;
-use halo2_base::halo2_proofs::halo2curves::bn256::{Bn256, Fq, Fr, G1Affine};
+use halo2_base::halo2_proofs::halo2curves::bn256::{self, Bn256, Fq, Fr, G1Affine};
 use halo2_base::halo2_proofs::halo2curves::FieldExt;
 use halo2_base::halo2_proofs::plonk::{Error, ProvingKey, VerifyingKey};
 use halo2_base::halo2_proofs::poly::commitment::{Params, ParamsProver};
@@ -86,6 +86,129 @@ pub async fn setup_eth_client(anvil: &AnvilInstance) -> EthersClient {
     // Instantiate the client with the wallet
     let client = Arc::new(SignerMiddleware::new(provider, wallet.with_chain_id(anvil.chain_id())));
     client
+}
+
+use revm::{
+    primitives::{Address as RAddress, CreateScheme, ExecutionResult, Output, TransactTo, TxEnv},
+    InMemoryDB, EVM,
+};
+use std::str;
+
+pub struct Evm {
+    evm: EVM<InMemoryDB>,
+}
+
+impl Evm {
+    pub fn new() -> Self {
+        Self {
+            evm: EVM {
+                env: Default::default(),
+                db: Some(Default::default()),
+            },
+        }
+    }
+
+    pub fn codesize(&mut self, address: RAddress) -> usize {
+        self.evm.db.as_ref().unwrap().accounts[&address].info.code.as_ref().unwrap().len()
+    }
+
+    pub fn create(&mut self, bytecode: Vec<u8>) -> RAddress {
+        let (_, output) = self.transact_success_or_panic(TxEnv {
+            gas_limit: u64::MAX,
+            transact_to: TransactTo::Create(CreateScheme::Create),
+            data: bytecode.into(),
+            ..Default::default()
+        });
+        match output {
+            Output::Create(_, Some(address)) => address,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn call(&mut self, address: RAddress, calldata: Vec<u8>) -> (u64, Vec<u8>) {
+        let (gas_used, output) = self.transact_success_or_panic(TxEnv {
+            gas_limit: u64::MAX,
+            transact_to: TransactTo::Call(address),
+            data: calldata.into(),
+            ..Default::default()
+        });
+        match output {
+            Output::Call(output) => (gas_used, output.into()),
+            _ => unreachable!(),
+        }
+    }
+
+    fn transact_success_or_panic(&mut self, tx: TxEnv) -> (u64, Output) {
+        self.evm.env.tx = tx;
+        let result = self.evm.transact_commit().unwrap();
+        self.evm.env.tx = Default::default();
+        match result {
+            ExecutionResult::Success { gas_used, output, logs, .. } => {
+                if !logs.is_empty() {
+                    println!("--- logs from {} ---", logs[0].address);
+                    for log in logs {
+                        println!("topic1: {:?}", log.topics[0]);
+                    }
+                    println!("--- end ---");
+                }
+                (gas_used, output)
+            }
+            ExecutionResult::Revert { gas_used, output } => panic!("Transaction reverts with gas_used {gas_used} and output {:#x}", output),
+            ExecutionResult::Halt { reason, gas_used } => panic!("Transaction halts unexpectedly with gas_used {gas_used} and reason {:?}", reason),
+        }
+    }
+}
+
+pub fn compile_solidity(solidity: impl AsRef<[u8]>) -> Vec<u8> {
+    let mut cmd = Command::new("solc")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .arg("--bin")
+        .arg("--via-ir")
+        .arg("-")
+        .spawn()
+        .unwrap();
+    cmd.stdin.take().unwrap().write_all(solidity.as_ref()).unwrap();
+    let output = cmd.wait_with_output().unwrap();
+    let stdout = str::from_utf8(&output.stdout).unwrap();
+    if let Some(binary) = find_binary(stdout) {
+        binary
+    } else {
+        panic!("{}", str::from_utf8(&output.stderr).unwrap());
+    }
+}
+
+fn find_binary(stdout: &str) -> Option<Vec<u8>> {
+    let start = stdout.find("Binary:")? + 8;
+    Some(hex::decode(&stdout[start..stdout.len() - 1]).unwrap())
+}
+
+pub async fn deploy_and_call_verifiers2(sols_dir: &PathBuf, runs: Option<usize>, proof: &[u8], instance: &DefaultEmailVerifyPublicInput) {
+    // // Wouldn't work :(
+    // let (_, verifier_bytecode, _) = get_contract_artifacts(&sols_dir.join("Halo2Verifier.sol"), "Halo2Verifier", runs);
+    // let (_, vk_bytecode, _) = get_contract_artifacts(&sols_dir.join("VerifyingKey.sol"), "Halo2VerifyingKey", runs);
+
+    let mut verifier_solidity = Vec::new();
+    let mut vk_solidity = Vec::new();
+    File::open(sols_dir.join("Halo2Verifier.sol")).unwrap().read_to_end(&mut verifier_solidity).unwrap();
+    File::open(sols_dir.join("VerifyingKey.sol")).unwrap().read_to_end(&mut vk_solidity).unwrap();
+    let verifier_bytecode = compile_solidity(verifier_solidity);
+    let vk_bytecode = compile_solidity(vk_solidity);
+
+    let mut evm = Evm::new();
+    dbg!(&evm.evm.env.cfg);
+    let verifier_address = evm.create(verifier_bytecode.to_vec());
+    dbg!(verifier_address);
+    let vk_address = evm.create(vk_bytecode.to_vec());
+    dbg!(vk_address);
+
+    let (gas_cost, output) = evm.call(
+        verifier_address,
+        halo2_solidity_verifier::encode_calldata(vk_address.0.into(), proof, &instance.instances::<bn256::Fr>()),
+    );
+    assert_eq!(revm::primitives::U256::from_be_bytes::<0x20>(output.try_into().unwrap()), revm::primitives::U256::from(1));
+    println!("Gas cost: {gas_cost}");
 }
 
 pub async fn deploy_and_call_verifiers(sols_dir: &PathBuf, runs: Option<usize>, proof: &[u8], instance: &DefaultEmailVerifyPublicInput) {

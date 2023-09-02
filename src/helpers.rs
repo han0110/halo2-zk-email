@@ -1,4 +1,4 @@
-use crate::eth::deploy_and_call_verifiers;
+use crate::eth::{deploy_and_call_verifiers, deploy_and_call_verifiers2};
 // use crate::snark_verifier_sdk::*;
 use crate::eth::gen_verifier::gen_sol_verifiers;
 use crate::{default_config_params, DefaultEmailVerifyPublicInput};
@@ -492,7 +492,7 @@ pub async fn evm_verify(circuit_config_path: &str, sols_dir: &str, proof_path: &
     println!("proof {}", hex::encode(&proof));
     let public_input = serde_json::from_reader(File::open(public_input_path).unwrap()).unwrap();
     println!("public_input {:?}", public_input);
-    deploy_and_call_verifiers(&PathBuf::new().join(sols_dir), None, &proof, &public_input).await;
+    deploy_and_call_verifiers2(&PathBuf::new().join(sols_dir), None, &proof, &public_input).await;
     Ok(())
 }
 
